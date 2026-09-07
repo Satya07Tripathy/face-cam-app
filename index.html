@@ -1,0 +1,524 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Face Cam App</title>
+<meta name="description" content="A webcam app that detects your face, reads your age and mood, and lets you draw on screen with a pinch of your fingers.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Big+Shoulders+Display:wght@600;700;800&family=IBM+Plex+Mono:wght@400;500;600&family=Archivo:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --ground: #F0F3EF;
+    --surface: #FFFFFF;
+    --surface-2: #E7EBE5;
+    --ink: #14171A;
+    --ink-soft: #4B534C;
+    --line: #D7DCD3;
+    --accent: #16A870;
+    --accent-ink: #06120C;
+    --accent-soft: #E4F4EC;
+    --swatch-red: #FF3B30;
+    --swatch-green: #34C759;
+    --swatch-blue: #2F6FED;
+    --swatch-yellow: #FFD60A;
+    --swatch-white: #FFFFFF;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --ground: #14171A;
+      --surface: #1B1F1C;
+      --surface-2: #22271F;
+      --ink: #EAEEE8;
+      --ink-soft: #A6AFA2;
+      --line: #2C332C;
+      --accent: #2FE39A;
+      --accent-ink: #05130D;
+      --accent-soft: #163229;
+    }
+  }
+
+  :root[data-theme="dark"] {
+    --ground: #14171A;
+    --surface: #1B1F1C;
+    --surface-2: #22271F;
+    --ink: #EAEEE8;
+    --ink-soft: #A6AFA2;
+    --line: #2C332C;
+    --accent: #2FE39A;
+    --accent-ink: #05130D;
+    --accent-soft: #163229;
+  }
+
+  * { box-sizing: border-box; }
+
+  html, body { margin: 0; padding: 0; }
+
+  body {
+    background: var(--ground);
+    color: var(--ink);
+    font-family: 'Archivo', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    line-height: 1.55;
+  }
+
+  h1, h2, h3, .display {
+    font-family: 'Big Shoulders Display', 'Arial Narrow', sans-serif;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.01em;
+    text-wrap: balance;
+    margin: 0;
+  }
+
+  code, .mono, .key, .hud {
+    font-family: 'IBM Plex Mono', 'Consolas', monospace;
+  }
+
+  a { color: inherit; }
+
+  img, svg { max-width: 100%; }
+
+  .wrap {
+    max-width: 920px;
+    margin: 0 auto;
+    padding: 0 28px;
+  }
+
+  /* ---------- Header ---------- */
+  header.site {
+    padding: 28px 0 0;
+  }
+  .site-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding-bottom: 20px;
+    border-bottom: 1px solid var(--line);
+  }
+  .brand {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-family: 'Big Shoulders Display', sans-serif;
+    font-weight: 700;
+    font-size: 20px;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+  }
+  .brand-mark {
+    width: 20px; height: 20px;
+    border: 2px solid var(--accent);
+    position: relative;
+    flex: none;
+  }
+  .brand-mark::after {
+    content: "";
+    position: absolute;
+    inset: 5px;
+    background: var(--accent);
+    border-radius: 50%;
+  }
+  .gh-link {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 13px;
+    color: var(--ink-soft);
+    text-decoration: none;
+    border: 1px solid var(--line);
+    padding: 7px 14px;
+    transition: border-color .15s, color .15s;
+  }
+  .gh-link:hover { border-color: var(--accent); color: var(--ink); }
+
+  /* ---------- Corner-bracket framing (the app's own bounding-box motif) ---------- */
+  .bracket {
+    position: relative;
+    padding: 28px;
+  }
+  .bracket::before, .bracket::after,
+  .bracket .bl, .bracket .br {
+    content: "";
+    position: absolute;
+    width: 22px; height: 22px;
+    border-color: var(--accent);
+    border-style: solid;
+    border-width: 0;
+  }
+  .bracket::before { top: 0; left: 0; border-top-width: 3px; border-left-width: 3px; }
+  .bracket::after { top: 0; right: 0; border-top-width: 3px; border-right-width: 3px; }
+  .bracket .bl { bottom: 0; left: 0; border-bottom-width: 3px; border-left-width: 3px; }
+  .bracket .br { bottom: 0; right: 0; border-bottom-width: 3px; border-right-width: 3px; }
+
+  /* ---------- Hero ---------- */
+  .hero {
+    padding: 56px 0 48px;
+    display: grid;
+    grid-template-columns: 1.1fr 1fr;
+    gap: 44px;
+    align-items: center;
+  }
+  .eyebrow {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 12px;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--accent);
+    margin-bottom: 14px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .eyebrow::before {
+    content: "";
+    width: 7px; height: 7px;
+    background: var(--accent);
+    border-radius: 50%;
+    display: inline-block;
+    animation: blink 1.6s ease-in-out infinite;
+  }
+  @media (prefers-reduced-motion: reduce) { .eyebrow::before { animation: none; } }
+  @keyframes blink { 0%, 100% { opacity: 1; } 50% { opacity: .25; } }
+
+  h1.title {
+    font-size: clamp(40px, 6vw, 64px);
+    line-height: 0.95;
+    margin-bottom: 18px;
+  }
+  h1.title span { color: var(--accent); }
+
+  .lede {
+    font-size: 17px;
+    color: var(--ink-soft);
+    max-width: 46ch;
+    margin-bottom: 28px;
+  }
+
+  .cta-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 12px;
+    align-items: center;
+  }
+  .btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 10px;
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 14px;
+    font-weight: 500;
+    padding: 14px 22px;
+    text-decoration: none;
+    border: 1px solid transparent;
+    white-space: nowrap;
+  }
+  .btn-primary {
+    background: var(--accent);
+    color: var(--accent-ink);
+  }
+  .btn-primary:hover { filter: brightness(1.08); }
+  .btn-ghost {
+    border-color: var(--line);
+    color: var(--ink);
+  }
+  .btn-ghost:hover { border-color: var(--accent); }
+  .fine {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 12px;
+    color: var(--ink-soft);
+    margin-top: 14px;
+  }
+
+  /* ---------- Viewfinder mockup ---------- */
+  .viewfinder {
+    aspect-ratio: 4 / 3;
+    background:
+      repeating-linear-gradient(0deg, transparent, transparent 27px, color-mix(in srgb, var(--line) 55%, transparent) 28px),
+      repeating-linear-gradient(90deg, transparent, transparent 27px, color-mix(in srgb, var(--line) 55%, transparent) 28px),
+      var(--surface-2);
+    border: 1px solid var(--line);
+    position: relative;
+    overflow: hidden;
+  }
+  .face-box {
+    position: absolute;
+    top: 22%; left: 32%;
+    width: 36%; height: 46%;
+    border: 2px solid var(--accent);
+  }
+  .face-box .tag {
+    position: absolute;
+    top: -28px; left: -2px;
+    background: var(--accent);
+    color: var(--accent-ink);
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 11px;
+    padding: 3px 7px;
+    white-space: nowrap;
+  }
+  .readout {
+    position: absolute;
+    left: 5%; bottom: 6%;
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 12px;
+    color: var(--ink);
+    background: color-mix(in srgb, var(--surface) 88%, transparent);
+    border: 1px solid var(--line);
+    padding: 8px 10px;
+    line-height: 1.7;
+  }
+  .readout b { color: var(--accent); font-weight: 600; }
+  .rec {
+    position: absolute;
+    top: 5%; right: 5%;
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 11px;
+    color: var(--ink-soft);
+    display: flex; align-items: center; gap: 6px;
+  }
+  .rec::before {
+    content: "";
+    width: 8px; height: 8px; border-radius: 50%;
+    background: var(--swatch-red);
+    animation: blink 1.4s ease-in-out infinite;
+  }
+  @media (prefers-reduced-motion: reduce) { .rec::before { animation: none; } }
+
+  /* ---------- Sections ---------- */
+  section { padding: 52px 0; }
+  section + section { border-top: 1px solid var(--line); }
+
+  .section-head {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    margin-bottom: 32px;
+    gap: 16px;
+  }
+  .section-head h2 { font-size: clamp(28px, 4vw, 38px); }
+  .section-num {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 12px;
+    color: var(--ink-soft);
+    white-space: nowrap;
+  }
+
+  .features {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 22px;
+  }
+  .feature { padding: 24px; background: var(--surface); border: 1px solid var(--line); }
+  .feature h3 {
+    font-size: 21px;
+    margin-bottom: 10px;
+    text-transform: none;
+    letter-spacing: 0;
+  }
+  .feature p { color: var(--ink-soft); font-size: 14.5px; margin: 0; }
+  .feature .glyph { margin-bottom: 18px; height: 46px; display: flex; align-items: center; }
+
+  .glyph-box { width: 46px; height: 46px; border: 2px solid var(--accent); position: relative; }
+  .glyph-box::before, .glyph-box::after { content: ""; position: absolute; width: 8px; height: 8px; border-color: var(--ink); border-style: solid; border-width: 0; }
+  .glyph-box::before { top: -2px; left: -2px; border-top-width: 2px; border-left-width: 2px; }
+  .glyph-box::after { bottom: -2px; right: -2px; border-bottom-width: 2px; border-right-width: 2px; }
+
+  .glyph-hud { font-family: 'IBM Plex Mono', monospace; font-size: 11px; color: var(--ink-soft); border-left: 2px solid var(--accent); padding-left: 10px; line-height: 1.6; }
+  .glyph-hud b { color: var(--accent); }
+
+  .glyph-dots { display: flex; gap: 6px; align-items: center; }
+  .dot { width: 16px; height: 16px; border: 1px solid var(--line); }
+
+  /* ---------- Hand diagram ---------- */
+  .howdraw {
+    display: grid;
+    grid-template-columns: 1fr 1.3fr;
+    gap: 36px;
+    align-items: center;
+  }
+  .hand-diagram { width: 100%; height: auto; }
+  .lm-label { font-family: 'IBM Plex Mono', monospace; font-size: 11px; fill: var(--ink-soft); }
+  .lm-label.hi { fill: var(--accent); font-weight: 600; }
+  .steps { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 18px; }
+  .steps li { display: grid; grid-template-columns: 34px 1fr; gap: 14px; }
+  .steps .n { font-family: 'IBM Plex Mono', monospace; color: var(--accent); font-size: 14px; padding-top: 2px; }
+  .steps h4 { margin: 0 0 4px; font-size: 15px; font-weight: 600; }
+  .steps p { margin: 0; color: var(--ink-soft); font-size: 14px; }
+
+  /* ---------- Controls / keycaps ---------- */
+  .keys { display: flex; flex-wrap: wrap; gap: 14px; }
+  .keyrow { display: flex; align-items: center; gap: 10px; background: var(--surface); border: 1px solid var(--line); padding: 10px 14px; }
+  .key {
+    background: var(--surface-2);
+    border: 1px solid var(--line);
+    border-bottom-width: 2px;
+    padding: 4px 9px;
+    font-size: 13px;
+    min-width: 20px;
+    text-align: center;
+  }
+  .keyrow span.desc { font-size: 13.5px; color: var(--ink-soft); }
+
+  /* ---------- Requirements ---------- */
+  .req-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 20px; margin-bottom: 28px; }
+  .req { border-left: 2px solid var(--line); padding-left: 14px; }
+  .req .k { font-family: 'IBM Plex Mono', monospace; font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--ink-soft); }
+  .req .v { font-size: 15px; margin-top: 4px; }
+  .note {
+    font-size: 13.5px;
+    color: var(--ink-soft);
+    background: var(--accent-soft);
+    border: 1px solid color-mix(in srgb, var(--accent) 35%, var(--line));
+    padding: 14px 16px;
+  }
+  .note b { color: var(--ink); }
+
+  /* ---------- Footer ---------- */
+  footer { padding: 36px 0 56px; }
+  .foot-row {
+    display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px;
+    font-family: 'IBM Plex Mono', monospace; font-size: 12px; color: var(--ink-soft);
+  }
+  .credits { margin-top: 18px; font-size: 12.5px; color: var(--ink-soft); }
+  .credits a { text-decoration: underline; text-decoration-color: var(--line); }
+
+  @media (max-width: 760px) {
+    .hero { grid-template-columns: 1fr; }
+    .features { grid-template-columns: 1fr; }
+    .req-grid { grid-template-columns: 1fr; }
+    .howdraw { grid-template-columns: 1fr; }
+  }
+</style>
+</head>
+<body>
+
+<header class="site">
+  <div class="wrap site-head">
+    <div class="brand"><span class="brand-mark"></span>Face Cam App</div>
+    <a class="gh-link" href="https://github.com/Satya07Tripathy/face-cam-app" target="_blank" rel="noopener">github.com/Satya07Tripathy/face-cam-app</a>
+  </div>
+</header>
+
+<main class="wrap">
+  <section class="hero" style="border-top:none;">
+    <div>
+      <div class="eyebrow">v1.0.0 &middot; Windows &middot; webcam required</div>
+      <h1 class="title">Your webcam,<br>reading <span>you</span>.</h1>
+      <p class="lede">A small computer-vision app that finds your face, guesses your age, gender and mood in real time, and lets you draw on screen using nothing but a pinch of your fingers.</p>
+      <div class="cta-row">
+        <a class="btn btn-primary" href="https://github.com/Satya07Tripathy/face-cam-app/releases/download/v1.0.0/FaceCamApp.exe">&#8595; Download FaceCamApp.exe</a>
+        <a class="btn btn-ghost" href="https://github.com/Satya07Tripathy/face-cam-app" target="_blank" rel="noopener">View source</a>
+      </div>
+      <div class="fine">165&nbsp;MB &middot; no install, no account &middot; first run fetches ~326&nbsp;MB of model weights</div>
+    </div>
+    <div class="bracket">
+      <span class="bl"></span><span class="br"></span>
+      <div class="viewfinder">
+        <div class="rec">REC</div>
+        <div class="face-box">
+          <div class="tag">FACE 0.98</div>
+        </div>
+        <div class="readout">Gender&nbsp; <b>Female</b><br>Age&nbsp;&nbsp;&nbsp;&nbsp; <b>27y</b><br>Mood&nbsp;&nbsp; <b>Happy</b></div>
+      </div>
+    </div>
+  </section>
+
+  <section id="features">
+    <div class="section-head">
+      <h2>What it does</h2>
+      <span class="section-num">03 modes / one app</span>
+    </div>
+    <div class="features">
+      <div class="feature">
+        <div class="glyph"><div class="glyph-box"></div></div>
+        <h3>Face detection</h3>
+        <p>A Haar cascade — the same classic technique that first put face detection in point-and-shoot cameras — tracks your face every frame, drawn as a live bounding box.</p>
+      </div>
+      <div class="feature">
+        <div class="glyph"><div class="glyph-hud">GENDER&nbsp; <b>M/F</b><br>AGE&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; <b>±yrs</b><br>MOOD&nbsp;&nbsp; <b>8 states</b></div></div>
+        <h3>Age, gender &amp; mood</h3>
+        <p>Two on-device neural networks read the detected face — one estimates age and gender, the other classifies expression into eight emotions.</p>
+      </div>
+      <div class="feature">
+        <div class="glyph"><div class="glyph-dots">
+          <div class="dot" style="background:var(--swatch-red)"></div>
+          <div class="dot" style="background:var(--swatch-green)"></div>
+          <div class="dot" style="background:var(--swatch-blue)"></div>
+          <div class="dot" style="background:var(--swatch-yellow)"></div>
+          <div class="dot" style="background:var(--swatch-white)"></div>
+        </div></div>
+        <h3>Finger drawing</h3>
+        <p>Hand-tracking finds 21 points on your hand, 30+ times a second. Spread your fingers to draw, pinch to lift the pen — five colors, plus an eraser.</p>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <div class="section-head">
+      <h2>How the drawing works</h2>
+      <span class="section-num">landmarks #4 &amp; #8</span>
+    </div>
+    <div class="howdraw">
+      <svg class="hand-diagram" viewBox="0 0 220 240" xmlns="http://www.w3.org/2000/svg">
+        <rect x="70" y="120" width="70" height="80" rx="18" fill="none" stroke="var(--line)" stroke-width="2"/>
+        <rect x="40" y="140" width="34" height="16" rx="8" fill="none" stroke="var(--line)" stroke-width="2" transform="rotate(-28 57 148)"/>
+        <rect x="82" y="55" width="16" height="70" rx="8" fill="none" stroke="var(--line)" stroke-width="2"/>
+        <rect x="102" y="45" width="16" height="80" rx="8" fill="none" stroke="var(--ink-soft)" stroke-width="2"/>
+        <rect x="122" y="50" width="16" height="75" rx="8" fill="none" stroke="var(--line)" stroke-width="2"/>
+        <rect x="142" y="62" width="16" height="63" rx="8" fill="none" stroke="var(--line)" stroke-width="2"/>
+        <line x1="46" y1="132" x2="110" y2="48" stroke="var(--accent)" stroke-width="1.5" stroke-dasharray="4 4"/>
+        <circle cx="46" cy="132" r="6" fill="var(--accent)"/>
+        <circle cx="110" cy="48" r="6" fill="var(--accent)"/>
+        <circle cx="130" cy="53" r="4" fill="var(--ink-soft)"/>
+        <circle cx="150" cy="65" r="4" fill="var(--ink-soft)"/>
+        <text x="30" y="115" class="lm-label hi">4 · thumb</text>
+        <text x="90" y="32" class="lm-label hi">8 · index</text>
+        <text x="60" y="90" class="lm-label">pinch dist.</text>
+      </svg>
+      <ol class="steps">
+        <li><span class="n">01</span><div><h4>Find the hand</h4><p>MediaPipe's Hand Landmarker locates 21 points per hand from the raw camera frame — no glove, no marker, no special lighting.</p></div></li>
+        <li><span class="n">02</span><div><h4>Measure the pinch</h4><p>The app watches the distance between landmark&nbsp;4 (thumb tip) and landmark&nbsp;8 (index tip). Close together means pinched.</p></div></li>
+        <li><span class="n">03</span><div><h4>Draw or pause</h4><p>Fingers apart draws a line from your last position to your current one; a pinch lifts the pen without drawing.</p></div></li>
+      </ol>
+    </div>
+  </section>
+
+  <section>
+    <div class="section-head">
+      <h2>Controls</h2>
+      <span class="section-num">keyboard-driven build</span>
+    </div>
+    <div class="keys">
+      <div class="keyrow"><span class="key mono">M</span><span class="desc">Switch Analyze / Draw</span></div>
+      <div class="keyrow"><span class="key mono">1</span><span class="key mono">2</span><span class="key mono">3</span><span class="key mono">4</span><span class="key mono">5</span><span class="desc">Pick draw color</span></div>
+      <div class="keyrow"><span class="key mono">E</span><span class="desc">Toggle eraser</span></div>
+      <div class="keyrow"><span class="key mono">C</span><span class="desc">Clear canvas</span></div>
+      <div class="keyrow"><span class="key mono">Q</span><span class="desc">Quit</span></div>
+    </div>
+    <p class="fine" style="margin-top:18px;">Prefer clicking to keystrokes? The source includes <code class="mono">gui_app.py</code>, a button-driven version of the same app.</p>
+  </section>
+
+  <section>
+    <div class="section-head">
+      <h2>Before you download</h2>
+      <span class="section-num">read this once</span>
+    </div>
+    <div class="req-grid">
+      <div class="req"><div class="k">Platform</div><div class="v">Windows 10 / 11 only</div></div>
+      <div class="req"><div class="k">Hardware</div><div class="v">A working webcam</div></div>
+      <div class="req"><div class="k">First run</div><div class="v">Internet, ~326&nbsp;MB download</div></div>
+    </div>
+    <p class="note"><b>Windows may show a SmartScreen warning</b> on first launch, since the app isn't code-signed. Click <b>More info &rarr; Run anyway</b>. All processing happens on your machine — no accounts, no cloud calls, nothing sent anywhere.</p>
+  </section>
+</main>
+
+<footer class="wrap">
+  <div class="foot-row">
+    <span>FACE CAM APP / v1.0.0 / MIT LICENSE</span>
+    <a class="gh-link" href="https://github.com/Satya07Tripathy/face-cam-app" target="_blank" rel="noopener">Source on GitHub</a>
+  </div>
+  <p class="credits">Built on <a href="https://opencv.org/" target="_blank" rel="noopener">OpenCV</a>, <a href="https://github.com/deepinsight/insightface" target="_blank" rel="noopener">insightface</a>, <a href="https://github.com/av-savchenko/hsemotion-onnx" target="_blank" rel="noopener">hsemotion-onnx</a> and <a href="https://github.com/google-ai-edge/mediapipe" target="_blank" rel="noopener">MediaPipe</a>.</p>
+</footer>
+
+</body>
+</html>
