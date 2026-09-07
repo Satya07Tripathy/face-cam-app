@@ -1,0 +1,16 @@
+opencv-python==4.14.0.94
+hsemotion-onnx==0.3.1
+insightface==1.0.1
+onnxruntime==1.29.0
+# matplotlib is here because mediapipe imports it internally, and installing
+# mediapipe with --no-deps (see note below) won't pull it in automatically.
+matplotlib==3.11.1
+
+# NOTE: mediapipe declares a dependency on opencv-contrib-python, which
+# provides the same `cv2` module as opencv-python above and will silently
+# clobber it if installed normally. That's why it's commented out here
+# instead of a plain line -- `pip install -r requirements.txt` should NOT
+# try to install it directly. On a fresh venv, run this file first, then
+# add mediapipe separately with:
+#   pip install mediapipe==1.0.1 --no-deps
+# mediapipe==1.0.1
