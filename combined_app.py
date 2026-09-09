@@ -3,6 +3,7 @@ import os
 # noise about the model, not actual errors) so it doesn't clutter output.
 os.environ.setdefault("GLOG_minloglevel", "2")
 
+import ctypes
 import sys
 import threading
 import time
@@ -36,28 +37,18 @@ HandLandmarker = mp.tasks.vision.HandLandmarker
 HandLandmarkerOptions = mp.tasks.vision.HandLandmarkerOptions
 VisionRunningMode = mp.tasks.vision.RunningMode
 
+WINDOW_NAME = "Face Cam App"
+
 # ===========================================================================
-# This combines the three separate scripts (face_detect.py, face_age_emotion
-# .py, hand_draw.py) into one app with two MODES you switch between with the
-# 'm' key:
-#   "analyze" -- face box + age/gender/emotion (from face_age_emotion.py)
-#   "draw"    -- finger-drawing (from hand_draw.py)
-# Only one mode's models actually run detection per frame -- running the
-# face+age+emotion pipeline AND the hand tracker at the same time would
-# double up on exactly the CPU cost that was already causing lag in each one
-# separately, for no real benefit (you're either looking at your own face
-# stats or drawing, not usually both at once).
+# Three modes, cycled with 'm':
+#   "analyze" -- face box + age/gender/emotion
+#   "draw"    -- finger-drawing overlaid on top of the live camera feed
+#   "notepad" -- finger-drawing on a blank page; camera feed is hidden, but
+#                the camera is still used behind the scenes to track your hand
 #
-# The hand-tracking model is also only *loaded* while draw mode is active
-# (created when you switch in, closed when you switch out) rather than kept
-# around the whole time. Each of these ML libraries (onnxruntime for
-# age/emotion, MediaPipe's own TensorFlow Lite runtime for hand tracking)
-# spins up its own internal thread pool for parallelism, and MediaPipe's in
-# particular has no exposed setting to limit it. Leaving it loaded even
-# while unused meant it was still sitting there competing for CPU time with
-# the face-detection loop and the age/emotion worker thread -- which is
-# almost certainly why analyze mode got laggier once draw mode was added to
-# the same app, even though analyze mode's own code didn't change.
+# Only "analyze", or one of the two drawing modes, actually runs its models
+# each frame -- never both families at once. See the loading/unloading of
+# hand_landmarker in the 'm' key handling below for why.
 # ===========================================================================
 
 # --- Face detection ---
@@ -65,18 +56,10 @@ face_cascade = cv2.CascadeClassifier(
     cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
 )
 
-# --- Age/gender model (see face_age_emotion.py for the full explanation of
-# why this needs a 326MB one-time download) ---
+# --- Age/gender model ---
 print("Loading age/gender model...")
 _model_dir = ensure_available("models", "buffalo_l")
 _genderage_path = os.path.join(_model_dir, "genderage.onnx")
-# This model is tiny (1.3MB), so it gains nothing from onnxruntime's default
-# of spreading work across every CPU core -- but doing so still means it
-# competes for those cores with everything else running. Pinning it to a
-# single thread costs us nothing here and removes one more source of
-# contention. (insightface's get_model() helper doesn't expose this option,
-# so we build the session ourselves and hand it to their Attribute class,
-# which is the same class get_model() would have returned anyway.)
 _sess_options = ort.SessionOptions()
 _sess_options.intra_op_num_threads = 1
 _sess_options.inter_op_num_threads = 1
@@ -89,9 +72,7 @@ genderage_model = Attribute(model_file=_genderage_path, session=_genderage_sessi
 print("Loading emotion model...")
 emotion_model = HSEmotionRecognizer(model_name="enet_b0_8_best_vgaf")
 
-# --- Hand landmark model options (the model itself is created/destroyed on
-# demand when switching in and out of draw mode -- see the 'm' key handling
-# below) ---
+# --- Hand landmark model options (created/destroyed on mode switch) ---
 hand_options = HandLandmarkerOptions(
     base_options=BaseOptions(
         model_asset_path=os.path.join(BASE_DIR, "models", "hand_landmarker.task")
@@ -101,12 +82,7 @@ hand_options = HandLandmarkerOptions(
 )
 hand_landmarker = None
 
-# ---------------------------------------------------------------------------
-# Age/emotion background worker -- unchanged from face_age_emotion.py.
-# Inference is handed off to a separate thread so the main loop (camera
-# capture + display, and in this combined app, hand tracking too) never
-# blocks waiting on it.
-# ---------------------------------------------------------------------------
+# --- Age/emotion background worker (unchanged) ---
 job_lock = threading.Lock()
 pending_job = None
 latest_label = None
@@ -146,13 +122,38 @@ def inference_worker():
 
 threading.Thread(target=inference_worker, daemon=True).start()
 
-RUN_MODELS_EVERY = 3  # how often (in frames) to submit a fresh age/emotion job
+RUN_MODELS_EVERY = 3
 
-# --- Hand-drawing state (see hand_draw.py for the full explanation) ---
+# ---------------------------------------------------------------------------
+# Hand-drawing tuning -- two changes here directly target "laggy and not
+# accurate":
+#
+# 1. EMA (exponential moving average) smoothing on the fingertip position.
+#    A hand-landmark model's output is never perfectly stable frame to
+#    frame -- tiny lighting/angle changes shift the reported point by a few
+#    pixels even when your finger hasn't moved, which shows up as a shaky,
+#    jittery line. Blending each new reading with the *previous smoothed*
+#    point (instead of drawing straight to the raw reading) averages that
+#    noise out. SMOOTHING is how much weight a brand-new reading gets: 1.0
+#    would mean no smoothing at all (raw/jittery); 0.4 is a reasonable
+#    middle ground between "smooth" and "still feels responsive."
+#
+# 2. Hysteresis on the pinch gesture. A single distance threshold for
+#    "pinched vs not" means that whenever your fingers happen to hover near
+#    that exact distance, tiny noise flips the state back and forth many
+#    times a second -- strokes get chopped into fragments, which reads as
+#    "inaccurate." Two thresholds instead (fingers must open PAST
+#    PINCH_START to begin drawing, then close PAST the smaller PINCH_STOP
+#    to stop) means the state can't flicker right at one boundary value.
+# ---------------------------------------------------------------------------
 INDEX_TIP = 8
 THUMB_TIP = 4
-PINCH_THRESHOLD = 40
-DETECT_WIDTH = 320
+PINCH_START = 45
+PINCH_STOP = 28
+SMOOTHING = 0.4
+DETECT_WIDTH = 256  # smaller than before (320) -- the hand model's own
+                     # internal input is small anyway, so this loses very
+                     # little accuracy while cutting real per-frame cost.
 
 COLORS = {
     ord('1'): ((0, 0, 255), "Red"),
@@ -166,13 +167,39 @@ color_name = "Red"
 THICKNESS = 5
 ERASER_THICKNESS = 40
 erasing = False
-canvas = None       # persistent drawing surface -- survives mode switches,
-                     # only 'c' clears it
-prev_point = None
 
-mode = "analyze"  # or "draw"
+camera_canvas = None   # "draw" mode's surface -- sized to the camera frame,
+                        # overlaid on the live video
+notepad_canvas = None  # "notepad" mode's surface -- a separate blank page,
+                        # sized to your actual screen, camera feed hidden
+prev_point = None      # last pen-down position (for drawing a connecting line)
+smoothed_point = None  # EMA-smoothed fingertip position
+pen_down = False       # current pinch state (persists across frames for hysteresis)
+
+MODES = ["analyze", "draw", "notepad"]
+mode = "analyze"
 frame_count = 0
 frames_since_face = 0
+
+# ---------------------------------------------------------------------------
+# Screen resolution, via the Windows API (this app is Windows-only already).
+# The notepad page is sized to this rather than to the camera resolution --
+# unlike "draw" mode, notepad mode never displays the camera image itself,
+# so there's no reason to limit it to the camera's resolution. That's also
+# what makes a crisp fullscreen notepad possible.
+# ---------------------------------------------------------------------------
+_user32 = ctypes.windll.user32
+SCREEN_W = _user32.GetSystemMetrics(0)
+SCREEN_H = _user32.GetSystemMetrics(1)
+
+
+def make_notepad_page():
+    # A plain, slightly warm off-white rather than pure white or black --
+    # reads more like a paper notepad, less like a blank video signal.
+    return np.full((SCREEN_H, SCREEN_W, 3), (238, 245, 248), dtype=np.uint8)
+
+
+notepad_canvas = make_notepad_page()
 
 CAPTURE_WIDTH, CAPTURE_HEIGHT = 640, 480
 cap = cv2.VideoCapture(0)
@@ -180,7 +207,12 @@ cap.set(cv2.CAP_PROP_FRAME_WIDTH, CAPTURE_WIDTH)
 cap.set(cv2.CAP_PROP_FRAME_HEIGHT, CAPTURE_HEIGHT)
 if not cap.isOpened():
     print("Could not open the webcam")
-    exit()
+    sys.exit(1)
+
+# WINDOW_NORMAL (resizable) is required for the fullscreen toggle below to
+# work at all -- the default AUTOSIZE window ignores it.
+cv2.namedWindow(WINDOW_NAME, cv2.WINDOW_NORMAL)
+is_fullscreen = False
 
 while True:
     ret, frame = cap.read()
@@ -189,17 +221,12 @@ while True:
 
     frame = cv2.flip(frame, 1)
     h, w = frame.shape[:2]
-    if canvas is None:
-        canvas = np.zeros_like(frame)
+    if camera_canvas is None:
+        camera_canvas = np.zeros_like(frame)
 
     frame_count += 1
 
     if mode == "analyze":
-        # Keep this fresh every frame we're not drawing, so that whenever
-        # we switch back into "draw" mode, the first stroke doesn't jump
-        # in from a stale old fingertip position.
-        prev_point = None
-
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         faces = face_cascade.detectMultiScale(
             gray, scaleFactor=1.1, minNeighbors=5, minSize=(60, 60)
@@ -234,7 +261,12 @@ while True:
                     cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2
                 )
 
-    else:  # mode == "draw"
+        # "draw" mode's on-camera canvas still shows through here too, so a
+        # sketch you made doesn't vanish just because you checked your
+        # age/emotion readout in between.
+        display = cv2.add(frame, camera_canvas)
+
+    else:  # mode == "draw" or "notepad"
         detect_height = int(DETECT_WIDTH * h / w)
         small_frame = cv2.resize(frame, (DETECT_WIDTH, detect_height))
         rgb = cv2.cvtColor(small_frame, cv2.COLOR_BGR2RGB)
@@ -242,73 +274,123 @@ while True:
         timestamp_ms = int(time.time() * 1000)
         result = hand_landmarker.detect_for_video(mp_image, timestamp_ms)
 
+        if mode == "draw":
+            target_canvas, target_w, target_h = camera_canvas, w, h
+        else:
+            target_canvas, target_w, target_h = notepad_canvas, SCREEN_W, SCREEN_H
+
+        index_px = None
         if result.hand_landmarks:
             landmarks = result.hand_landmarks[0]
             index_tip = landmarks[INDEX_TIP]
             thumb_tip = landmarks[THUMB_TIP]
-            index_px = (int(index_tip.x * w), int(index_tip.y * h))
-            thumb_px = (int(thumb_tip.x * w), int(thumb_tip.y * h))
 
-            pinch_dist = np.hypot(
-                index_px[0] - thumb_px[0], index_px[1] - thumb_px[1]
-            )
-            pen_down = pinch_dist > PINCH_THRESHOLD
+            # Pinch distance is measured in the CAMERA FRAME's own scale
+            # (w, h), regardless of which mode/canvas we're drawing onto --
+            # otherwise the same physical pinch would register as a tiny
+            # gap on "draw" mode's 640-wide canvas but a huge one on
+            # notepad mode's 1920-wide screen, making the gesture threshold
+            # meaningless in one mode or the other.
+            index_ref = (index_tip.x * w, index_tip.y * h)
+            thumb_ref = (thumb_tip.x * w, thumb_tip.y * h)
+            pinch_dist = np.hypot(index_ref[0] - thumb_ref[0], index_ref[1] - thumb_ref[1])
 
+            if pen_down:
+                if pinch_dist < PINCH_STOP:
+                    pen_down = False
+            else:
+                if pinch_dist > PINCH_START:
+                    pen_down = True
+
+            # The actual drawing/cursor position, mapped to whichever
+            # canvas is active right now.
+            raw_point = (index_tip.x * target_w, index_tip.y * target_h)
+            if smoothed_point is None:
+                smoothed_point = raw_point
+            else:
+                smoothed_point = (
+                    SMOOTHING * raw_point[0] + (1 - SMOOTHING) * smoothed_point[0],
+                    SMOOTHING * raw_point[1] + (1 - SMOOTHING) * smoothed_point[1],
+                )
+            index_px = (int(smoothed_point[0]), int(smoothed_point[1]))
+
+            if pen_down:
+                stroke_color = (0, 0, 0) if erasing else draw_color
+                stroke_thickness = ERASER_THICKNESS if erasing else THICKNESS
+                if prev_point is not None:
+                    cv2.line(target_canvas, prev_point, index_px, stroke_color, stroke_thickness)
+                prev_point = index_px
+            else:
+                prev_point = None
+        else:
+            prev_point = None
+            smoothed_point = None
+            pen_down = False
+
+        if mode == "draw":
+            display = cv2.add(frame, camera_canvas)
+        else:
+            display = notepad_canvas.copy()
+
+        if index_px is not None:
             if not pen_down:
                 dot_color = (0, 0, 255)
             elif erasing:
                 dot_color = (128, 128, 128)
             else:
                 dot_color = draw_color
-            cv2.circle(frame, index_px, 10, dot_color, -1)
+            cv2.circle(display, index_px, 10, dot_color, -1)
 
-            if pen_down:
-                stroke_color = (0, 0, 0) if erasing else draw_color
-                stroke_thickness = ERASER_THICKNESS if erasing else THICKNESS
-                if prev_point is not None:
-                    cv2.line(canvas, prev_point, index_px, stroke_color, stroke_thickness)
-                prev_point = index_px
-            else:
-                prev_point = None
-        else:
-            prev_point = None
-
-    # Canvas overlay applies in both modes, so a drawing you made stays
-    # visible even while you're back in analyze mode looking at your
-    # age/emotion readout.
-    combined = cv2.add(frame, canvas)
+    # HUD text needs to be dark on notepad's light page, but stays light
+    # everywhere else (video is generally dark/busy enough for white text).
+    hud_color = (40, 40, 40) if mode == "notepad" else (255, 255, 255)
 
     if mode == "analyze":
-        hud = "Mode: ANALYZE (face/age/emotion) | m: switch to draw | c: clear drawing | q: quit"
+        hud = "ANALYZE  |  m: next mode (draw)  |  f: fullscreen  |  c: clear drawing  |  q: quit"
     else:
         tool = "ERASER" if erasing else color_name
-        hud = f"Mode: DRAW (tool: {tool}) | m: switch to analyze | 1-5: color | e: eraser | c: clear | q: quit"
+        next_mode = "notepad" if mode == "draw" else "analyze"
+        hud = f"{mode.upper()} (tool: {tool})  |  m: next mode ({next_mode})  |  f: fullscreen  |  1-5: color  |  e: eraser  |  c: clear  |  q: quit"
     cv2.putText(
-        combined, hud, (10, 25),
-        cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 2
+        display, hud, (10, 25),
+        cv2.FONT_HERSHEY_SIMPLEX, 0.55, hud_color, 2
     )
 
-    if mode == "draw":
-        cv2.rectangle(combined, (10, 35), (40, 65), draw_color, -1)
-        cv2.rectangle(combined, (10, 35), (40, 65), (255, 255, 255), 1)
+    if mode in ("draw", "notepad"):
+        cv2.rectangle(display, (10, 35), (40, 65), draw_color, -1)
+        cv2.rectangle(display, (10, 35), (40, 65), hud_color, 1)
 
-    cv2.imshow("Face + Age + Emotion + Draw", combined)
+    cv2.imshow(WINDOW_NAME, display)
 
     key = cv2.waitKey(1) & 0xFF
     if key == ord('q'):
         break
+    elif key == ord('f'):
+        is_fullscreen = not is_fullscreen
+        cv2.setWindowProperty(
+            WINDOW_NAME, cv2.WND_PROP_FULLSCREEN,
+            cv2.WINDOW_FULLSCREEN if is_fullscreen else cv2.WINDOW_NORMAL
+        )
     elif key == ord('m'):
-        if mode == "analyze":
-            mode = "draw"
+        idx = MODES.index(mode)
+        next_mode = MODES[(idx + 1) % len(MODES)]
+        needs_hand = next_mode in ("draw", "notepad")
+        had_hand = mode in ("draw", "notepad")
+        if needs_hand and not had_hand:
             print("Loading hand tracking model...")
             hand_landmarker = HandLandmarker.create_from_options(hand_options)
-        else:
-            mode = "analyze"
+        elif not needs_hand and had_hand:
             hand_landmarker.close()
             hand_landmarker = None
+        mode = next_mode
         prev_point = None
+        smoothed_point = None
+        pen_down = False
     elif key == ord('c'):
-        canvas[:] = 0
+        if mode == "notepad":
+            notepad_canvas = make_notepad_page()
+        else:
+            camera_canvas[:] = 0
     elif key == ord('e'):
         erasing = not erasing
     elif key in COLORS:

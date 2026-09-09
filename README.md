@@ -14,16 +14,20 @@ Grab the latest `FaceCamApp.exe` from the [Releases page](../../releases/latest)
 
 - **Face detection** — a green box tracks your face in real time.
 - **Age, gender & emotion estimation** — runs two small neural networks on the detected face.
-- **Finger drawing** — pinch your thumb and index finger together to lift the pen, spread them apart to draw, tracked entirely through your hand in the camera feed (no mouse or touchscreen).
+- **Finger drawing**, in two flavors — pinch your thumb and index finger together to lift the pen, spread them apart to draw, tracked entirely through your hand in the camera feed (no mouse or touchscreen):
+  - **Draw mode** — sketch directly on top of your live camera feed.
+  - **Notepad mode** — sketch on a separate blank page instead, full screen resolution, camera feed hidden.
+- **Fullscreen** — toggle any mode into fullscreen.
 
 ## Controls
 
 | Key | Action |
 |---|---|
-| `m` | Switch between Analyze mode and Draw mode |
+| `m` | Cycle modes: Analyze → Draw → Notepad → Analyze |
+| `f` | Toggle fullscreen |
 | `1`–`5` | Pick a draw color (red/green/blue/yellow/white) |
 | `e` | Toggle eraser |
-| `c` | Clear the drawing |
+| `c` | Clear the current drawing |
 | `q` | Quit |
 
 ## Running from source
